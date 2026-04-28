@@ -3,19 +3,33 @@ import os
 import time
 import subprocess
 
+STATE_IDLE = "IDLE"
+STATE_LISTENING = "LISTENING"
+STATE_THINKING = "THINKING"
+STATE_SPEAKING = "SPEAKING"
+
 CONFIG_PATH = os.path.expanduser("~/lumia_project/config.sh")
 
-PC_IP = "192.168.28.119"
+PC_IP = "192.168.100.1"
 PC_PORT = 50505
 
 AUDIO_FILE = os.path.expanduser("~/lumia_project/input.wav")
 RESPONSE_FILE = os.path.expanduser("~/lumia_project/resposta.mp3")
+
+state = STATE_IDLE
+
+
+def set_state(new_state):
+    global state
+    state = new_state
+    print(f"[STATE] {state}")
 
 
 def carregar_config():
     global PC_IP, PC_PORT
 
     if not os.path.exists(CONFIG_PATH):
+        print("[CONFIG] config.sh não encontrado. Usando padrão.")
         return
 
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -23,41 +37,53 @@ def carregar_config():
             linha = linha.strip()
 
             if linha.startswith("PC_IP="):
-                PC_IP = linha.split("=")[1].replace('"', "").replace("'", "")
+                PC_IP = linha.split("=", 1)[1].replace('"', "").replace("'", "").strip()
 
             elif linha.startswith("PC_PORT="):
-                try:
-                    PC_PORT = int(linha.split("=")[1].replace('"', "").replace("'", ""))
-                except:
-                    pass
+                PC_PORT = int(linha.split("=", 1)[1].replace('"', "").replace("'", "").strip())
 
 
 def recv_exact(sock, size):
     data = b""
+
     while len(data) < size:
         chunk = sock.recv(size - len(data))
+
         if not chunk:
             raise ConnectionError("PC desconectou")
+
         data += chunk
+
     return data
 
 
 def receber_bloco(sock):
-    tamanho_raw = recv_exact(sock, 32).decode().strip()
+    tamanho_raw = recv_exact(sock, 32).decode("utf-8", errors="ignore").strip()
+
+    if not tamanho_raw:
+        return b""
+
     tamanho = int(tamanho_raw)
 
-    if tamanho == 0:
+    if tamanho <= 0:
         return b""
 
     return recv_exact(sock, tamanho)
 
 
 def enviar_bloco(sock, data):
-    sock.sendall(str(len(data)).encode().ljust(32))
-    sock.sendall(data)
+    sock.sendall(str(len(data)).encode("utf-8").ljust(32))
+
+    if data:
+        sock.sendall(data)
 
 
-def gravar_audio(caminho=AUDIO_FILE, max_segundos=15):
+def media_cmd(*args):
+    subprocess.run(["cmd", "media_session", *args], check=False)
+
+
+def gravar_audio(caminho=AUDIO_FILE, max_segundos=12):
+    set_state(STATE_LISTENING)
     print("[ÁUDIO] Aguardando sua fala...")
 
     if os.path.exists(caminho):
@@ -87,16 +113,13 @@ def gravar_audio(caminho=AUDIO_FILE, max_segundos=15):
 
 
 def enviar_audio(sock, arquivo):
+    set_state(STATE_THINKING)
     print("[REDE] Enviando áudio para o cérebro da LÚMIA...")
 
     with open(arquivo, "rb") as f:
         enviar_bloco(sock, f.read())
 
     print("[REDE] Áudio enviado com sucesso.")
-
-
-def media_cmd(*args):
-    subprocess.run(["cmd", "media_session", *args], check=False)
 
 
 def executar_comando_android(comando):
@@ -108,7 +131,7 @@ def executar_comando_android(comando):
     print(f"[ANDROID] Executando comando: {comando}")
 
     if comando.startswith("CMD:DEEZER_SEARCH:"):
-        busca = comando.replace("CMD:DEEZER_SEARCH:", "").strip()
+        busca = comando.replace("CMD:DEEZER_SEARCH:", "", 1).strip()
         busca_url = busca.replace(" ", "%20")
 
         subprocess.run([
@@ -118,12 +141,11 @@ def executar_comando_android(comando):
         ], check=False)
 
         time.sleep(4)
-
         media_cmd("dispatch", "play")
         return
 
     if comando.startswith("CMD:DEEZER_LINK:"):
-        link = comando.replace("CMD:DEEZER_LINK:", "").strip()
+        link = comando.replace("CMD:DEEZER_LINK:", "", 1).strip()
 
         subprocess.run([
             "am", "start",
@@ -132,7 +154,6 @@ def executar_comando_android(comando):
         ], check=False)
 
         time.sleep(4)
-
         media_cmd("dispatch", "play")
         return
 
@@ -187,6 +208,7 @@ def tocar_audio(arquivo):
     if not arquivo:
         return
 
+    set_state(STATE_SPEAKING)
     print("[ÁUDIO] Reproduzindo resposta da LÚMIA...")
 
     subprocess.run([
@@ -195,12 +217,13 @@ def tocar_audio(arquivo):
         arquivo
     ], check=False)
 
-    # Anti-eco: evita ela gravar a própria voz logo depois
-    time.sleep(4)
+    time.sleep(5)
+    set_state(STATE_IDLE)
 
 
 def main():
     carregar_config()
+    set_state(STATE_IDLE)
 
     while True:
         try:
@@ -223,6 +246,7 @@ def main():
         except Exception as e:
             print(f"[ERRO] {e}")
             print("[REDE] Tentando reconectar em 5 segundos...")
+            set_state(STATE_IDLE)
             time.sleep(5)
 
 

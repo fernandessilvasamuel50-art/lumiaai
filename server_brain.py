@@ -1,6 +1,8 @@
 import socket
 import asyncio
+import re
 from pathlib import Path
+
 import requests
 import edge_tts
 from faster_whisper import WhisperModel
@@ -23,22 +25,35 @@ whisper = WhisperModel("medium", device="cpu", compute_type="int8")
 
 def recv_exact(sock, size):
     data = b""
+
     while len(data) < size:
         chunk = sock.recv(size - len(data))
+
         if not chunk:
             raise ConnectionError("Cliente desconectado")
+
         data += chunk
+
     return data
 
 
 def receber_bloco(sock):
-    tamanho_raw = recv_exact(sock, 32).decode().strip()
+    tamanho_raw = recv_exact(sock, 32).decode("utf-8", errors="ignore").strip()
+
+    if not tamanho_raw:
+        return b""
+
     tamanho = int(tamanho_raw)
+
+    if tamanho <= 0:
+        return b""
+
     return recv_exact(sock, tamanho)
 
 
 def enviar_bloco(sock, data):
-    sock.sendall(str(len(data)).encode().ljust(32))
+    sock.sendall(str(len(data)).encode("utf-8").ljust(32))
+
     if data:
         sock.sendall(data)
 
@@ -50,11 +65,18 @@ def transcrever(wav_path):
         beam_size=5,
         vad_filter=True,
     )
+
     return " ".join(seg.text.strip() for seg in segments).strip()
 
 
 async def gerar_voz_async(texto, saida):
-    communicate = edge_tts.Communicate(texto, VOICE_NAME)
+    communicate = edge_tts.Communicate(
+        texto,
+        VOICE_NAME,
+        rate="-5%",
+        volume="+0%"
+    )
+
     await communicate.save(str(saida))
 
 
@@ -62,35 +84,52 @@ def gerar_voz(texto, saida):
     asyncio.run(gerar_voz_async(texto, saida))
 
 
-def limpar_texto_musica(texto):
-    original = texto.strip()
-    t = texto.lower().strip()
+def limpar_busca_musica(texto):
+    texto = texto.lower().strip()
 
-    remover = [
-        "lúmia", "lumia",
-        "por favor",
-        "pra mim", "para mim",
-        "aí", "ai",
-        "no deezer",
-        "deezer",
-        "coloca", "coloque",
-        "toca", "toque",
-        "bota", "botar",
-        "reproduz", "reproduzir",
-        "abre", "abrir",
-        "quero ouvir",
-        "eu quero ouvir",
-        "uma música", "uma musica",
-        "música", "musica",
-        "um som", "som",
-        "playlist",
+    texto = re.sub(r"^(oi|olá|ola|e aí|e ai)\s+(lúmia|lumia)[, ]*", "", texto)
+    texto = re.sub(r"^(lúmia|lumia)[, ]*", "", texto)
+    texto = re.sub(r"tudo bem( com você| contigo)?\??", "", texto)
+
+    padroes = [
+        r".*?\btoca\b",
+        r".*?\btoque\b",
+        r".*?\bcoloca\b",
+        r".*?\bcoloque\b",
+        r".*?\bbota\b",
+        r".*?\breproduz\b",
+        r".*?\bquero ouvir\b",
+        r".*?\bprocura\b",
+        r".*?\bbusca\b",
     ]
 
-    busca = t
-    for palavra in remover:
-        busca = busca.replace(palavra, " ")
+    busca = texto
 
-    busca = " ".join(busca.split())
+    for padrao in padroes:
+        novo = re.sub(padrao, "", busca).strip()
+
+        if novo != busca:
+            busca = novo
+            break
+
+    remover = [
+        "uma música", "uma musica",
+        "a música", "a musica",
+        "música", "musica",
+        "um som", "som",
+        "no deezer",
+        "deezer",
+        "pra mim",
+        "para mim",
+        "por favor",
+        "aí",
+        "ai",
+    ]
+
+    for item in remover:
+        busca = busca.replace(item, " ")
+
+    busca = " ".join(busca.split()).strip(" ,.!?")
 
     if not busca:
         busca = "músicas populares"
@@ -101,69 +140,132 @@ def limpar_texto_musica(texto):
 def detectar_acao(texto_usuario):
     texto = texto_usuario.lower().strip()
 
-    # volume
-    if any(x in texto for x in ["aumenta o volume", "aumentar o volume", "sobe o volume", "volume mais alto"]):
+    # volume primeiro
+    if any(frase in texto for frase in [
+        "aumenta o volume",
+        "aumentar o volume",
+        "sobe o volume",
+        "volume mais alto",
+        "aumenta o som",
+        "sobe o som",
+    ]):
         return "CMD:VOLUME_UP", "Aumentei o volume."
 
-    if any(x in texto for x in ["abaixa o volume", "abaixar o volume", "diminui o volume", "volume mais baixo"]):
+    if any(frase in texto for frase in [
+        "abaixa o volume",
+        "abaixar o volume",
+        "diminui o volume",
+        "volume mais baixo",
+        "abaixa o som",
+        "diminui o som",
+    ]):
         return "CMD:VOLUME_DOWN", "Abaixei o volume."
 
-    # mídia
-    if any(x in texto for x in ["pausa", "pausar", "para a música", "parar a música"]):
-        return "CMD:MEDIA_PLAY_PAUSE", "Pausei a música."
+    # controle de mídia
+    if any(frase in texto for frase in [
+        "pausa",
+        "pausar",
+        "pause",
+        "para a música",
+        "parar a música",
+        "para de tocar",
+    ]):
+        return "CMD:MEDIA_PAUSE", "Pausei."
 
-    if any(x in texto for x in ["continua", "continuar", "despausa", "volta a tocar"]):
-        return "CMD:MEDIA_PLAY_PAUSE", "Continuando a música."
+    if any(frase in texto for frase in [
+        "continua",
+        "continuar",
+        "despausa",
+        "dá play",
+        "dar play",
+        "toca de novo",
+        "volta a tocar",
+    ]):
+        return "CMD:MEDIA_PLAY", "Continuando."
 
-    if any(x in texto for x in ["próxima", "proxima", "pula essa", "passa essa", "próxima música", "proxima musica"]):
+    if any(frase in texto for frase in [
+        "próxima",
+        "proxima",
+        "pula essa",
+        "passa essa",
+        "próxima música",
+        "proxima musica",
+    ]):
         return "CMD:MEDIA_NEXT", "Pulando para a próxima."
 
-    if any(x in texto for x in ["volta música", "voltar música", "música anterior", "musica anterior", "volta essa"]):
-        return "CMD:MEDIA_PREVIOUS", "Voltando para a música anterior."
+    if any(frase in texto for frase in [
+        "música anterior",
+        "musica anterior",
+        "volta uma música",
+        "volta uma musica",
+        "anterior",
+    ]):
+        return "CMD:MEDIA_PREVIOUS", "Voltando para a anterior."
 
     # música genérica
     gatilhos_musica = [
-        "toca", "toque",
-        "coloca", "coloque",
+        "toca",
+        "toque",
+        "coloca",
+        "coloque",
         "bota",
         "reproduz",
         "quero ouvir",
-        "abre"
+        "procura",
+        "busca",
     ]
 
-    termos_musica = [
-        "música", "musica",
+    palavras_musica = [
+        "música",
+        "musica",
         "som",
         "playlist",
+        "álbum",
+        "album",
+        "cantor",
+        "cantora",
+        "banda",
+        "artista",
         "deezer",
-        "álbum", "album"
     ]
 
-    if any(g in texto for g in gatilhos_musica) and (
-        any(m in texto for m in termos_musica) or len(texto.split()) >= 2
-    ):
-        busca = limpar_texto_musica(texto_usuario)
-        return f"CMD:DEEZER_SEARCH:{busca}", f"Claro, vou procurar {busca} no Deezer."
+    tem_gatilho = any(g in texto for g in gatilhos_musica)
+    tem_musica = any(m in texto for m in palavras_musica)
 
-    return None, None
+    if tem_gatilho:
+        busca = limpar_busca_musica(texto_usuario)
+
+        if busca:
+            return f"CMD:DEEZER_SEARCH:{busca}", f"Vou procurar {busca} no Deezer."
+
+    if tem_musica and "deezer" in texto:
+        busca = limpar_busca_musica(texto_usuario)
+        return f"CMD:DEEZER_SEARCH:{busca}", f"Vou procurar {busca} no Deezer."
+
+    return "", ""
 
 
 def perguntar_ollama(texto):
     prompt_sistema = """
 Você é LÚMIA, uma assistente virtual feminina local.
 
-Responda em português do Brasil, de forma natural, direta e com personalidade.
+Responda em português do Brasil.
+Seja natural, direta, útil e com personalidade.
 
-Suas habilidades atuais:
+Suas habilidades reais atuais:
 - conversar com o usuário;
 - ouvir áudio enviado pelo celular;
 - responder com voz feminina;
-- pedir para o celular abrir buscas no Deezer;
-- controlar mídia do celular com play, pause, próxima e anterior;
-- aumentar e abaixar o volume do celular.
+- mandar o celular buscar músicas no Deezer;
+- controlar mídia no celular com play, pause, próxima e anterior;
+- aumentar e abaixar volume do celular.
 
-Quando o usuário pedir algo que você ainda não consegue executar de verdade, não finja.
-Diga que ainda não consegue fazer aquilo e explique de forma curta.
+Regras importantes:
+- Não diga que executou algo se nenhum comando foi enviado.
+- Não use ações falsas como "*tocando música*".
+- Se só abriu uma busca no Deezer, diga que procurou no Deezer, não que a música já está tocando.
+- Se o usuário pedir algo que você ainda não faz, diga: "Ainda não consigo fazer isso, mas posso tentar ajudar de outro jeito."
+- Para comandos, responda curto.
 """
 
     payload = {
@@ -172,10 +274,10 @@ Diga que ainda não consegue fazer aquilo e explique de forma curta.
         "stream": False,
     }
 
-    r = requests.post(OLLAMA_URL, json=payload, timeout=120)
-    r.raise_for_status()
+    resposta = requests.post(OLLAMA_URL, json=payload, timeout=120)
+    resposta.raise_for_status()
 
-    return r.json().get("response", "").strip() or "Não consegui responder agora."
+    return resposta.json().get("response", "").strip() or "Não consegui responder agora."
 
 
 def handle_client(conn, addr):
@@ -191,23 +293,25 @@ def handle_client(conn, addr):
             output_mp3 = TEMP_DIR / "lumia_response.mp3"
 
             input_wav.write_bytes(audio_bytes)
-            print(f"[REDE] Áudio recebido: {len(audio_bytes)} bytes")
 
+            print(f"[REDE] Áudio recebido: {len(audio_bytes)} bytes")
             print("[WHISPER] Transcrevendo...")
+
             texto_usuario = transcrever(input_wav)
+
             print(f"[USUÁRIO] {texto_usuario}")
 
-            comando, resposta_acao = detectar_acao(texto_usuario)
-
             if not texto_usuario:
-                resposta = "Eu não consegui ouvir direito. Pode repetir?"
                 comando = ""
-            elif resposta_acao:
-                resposta = resposta_acao
+                resposta = "Não consegui ouvir direito. Pode repetir?"
             else:
-                print("[OLLAMA] Pensando...")
-                resposta = perguntar_ollama(texto_usuario)
-                comando = ""
+                comando, resposta_acao = detectar_acao(texto_usuario)
+
+                if resposta_acao:
+                    resposta = resposta_acao
+                else:
+                    print("[OLLAMA] Pensando...")
+                    resposta = perguntar_ollama(texto_usuario)
 
             print(f"[COMANDO] {comando}")
             print(f"[LÚMIA] {resposta}")
@@ -215,7 +319,7 @@ def handle_client(conn, addr):
             print("[TTS] Gerando voz feminina...")
             gerar_voz(resposta, output_mp3)
 
-            enviar_bloco(conn, comando.encode("utf-8"))
+            enviar_bloco(conn, comando.encode("utf-8") if comando else b"")
             enviar_bloco(conn, output_mp3.read_bytes())
 
             print("[REDE] Comando/resposta enviados ao celular.")
@@ -247,6 +351,7 @@ def main():
 
         while True:
             conn, addr = server.accept()
+
             with conn:
                 handle_client(conn, addr)
 
