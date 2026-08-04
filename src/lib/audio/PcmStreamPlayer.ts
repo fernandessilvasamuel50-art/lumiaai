@@ -17,6 +17,7 @@ export class PcmStreamPlayer {
   private queuedSources = 0;
   private endedSources = 0;
   private totalAudioMs = 0;
+  private streamComplete = false;
   private readonly onPlaybackStart?: (scheduledAtPerformanceMs: number) => void;
   private readonly onPlaybackEnd?: () => void;
   private readonly onLevel?: (level: number) => void;
@@ -49,6 +50,13 @@ export class PcmStreamPlayer {
     }
   }
 
+  markStreamComplete(): void {
+    this.streamComplete = true;
+    if (!this.stopped && (this.queuedSources === 0 || this.endedSources >= this.queuedSources)) {
+      this.onPlaybackEnd?.();
+    }
+  }
+
   setVolume(volume: number): void {
     this.gainNode.gain.setTargetAtTime(volume, this.audioContext.currentTime, 0.01);
   }
@@ -75,7 +83,7 @@ export class PcmStreamPlayer {
     source.onended = () => {
       this.sources.delete(source);
       this.endedSources += 1;
-      if (!this.stopped && this.queuedSources > 0 && this.endedSources === this.queuedSources) {
+      if (!this.stopped && this.streamComplete && this.queuedSources > 0 && this.endedSources === this.queuedSources) {
         this.onPlaybackEnd?.();
       }
     };

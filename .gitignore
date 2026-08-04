@@ -12,3 +12,5 @@ yarn-error.log*
 pnpm-debug.log*
 coverage
 .vite
+data/*
+!data/.gitkeep

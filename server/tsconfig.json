@@ -13,6 +13,6 @@
     "outDir": "../dist-server",
     "types": ["node"]
   },
-  "include": ["./**/*.ts", "../src/shared/**/*.ts"]
+  "include": ["./**/*.ts", "../shared/**/*.ts"]
 }
 

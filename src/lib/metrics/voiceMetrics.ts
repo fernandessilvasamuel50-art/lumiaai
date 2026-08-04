@@ -1,4 +1,4 @@
-import type { AudioOutputFormat } from '../../shared/protocol.js';
+import type { AudioOutputFormat } from '../../../shared/protocol/index.js';
 
 export type VoiceMetrics = {
   startedAtWallClock?: string;

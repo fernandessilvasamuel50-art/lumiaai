@@ -23,11 +23,11 @@ export function cartesiaErrorToPortuguese(error: CartesiaErrorLike): string {
   const detail = redactSecrets(error.message || error.title || 'Erro sem detalhes.');
 
   if (error.status_code === 401 || error.status_code === 403) {
-    return `A Cartesia recusou a autenticação${code}. Verifique a chave em C:\\lumia.env ou C:\\lumia\\.env.`;
+    return `A Cartesia recusou a autenticação${code}. Verifique a chave em C:\\lumia\\.env.`;
   }
 
   if (error.status_code === 404 || error.error_code === 'voice_not_found') {
-    return `A voz configurada não foi encontrada${code}. Confira CARTESIA_VOICE_ID em C:\\lumia.env.`;
+    return `A voz configurada não foi encontrada${code}. Confira CARTESIA_VOICE_ID em C:\\lumia\\.env.`;
   }
 
   if (error.status_code === 400) {

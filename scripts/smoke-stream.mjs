@@ -1,10 +1,12 @@
 import WebSocket from 'ws';
 import { performance } from 'node:perf_hooks';
+import { randomUUID } from 'node:crypto';
 
-const url = process.argv[2] || 'ws://127.0.0.1:8787/ws/tts';
+const url = process.argv[2] || 'ws://127.0.0.1:8787/ws/conversation';
 const timeoutMs = Number(process.env.SMOKE_TIMEOUT_MS || 20000);
 const sampleRate = Number(process.env.SMOKE_SAMPLE_RATE || 44100);
-const transcript = process.env.SMOKE_TRANSCRIPT || 'Teste curto da Lumia.';
+const message = process.env.SMOKE_MESSAGE || 'Responda de forma breve para validar o streaming.';
+const turnId = randomUUID();
 
 let firstAudioAt;
 let doneAt;
@@ -22,13 +24,10 @@ const timeout = setTimeout(() => {
 socket.on('open', () => {
   socket.send(
     JSON.stringify({
-      type: 'start',
-      request: {
-        transcript,
-        speed: 1,
-        sampleRate,
-        clientStartedAt: Date.now(),
-      },
+      type: 'turn.start',
+      turnId,
+      message,
+      sampleRate,
     }),
   );
 });
@@ -48,7 +47,7 @@ socket.on('message', (data, isBinary) => {
     process.exitCode = 1;
   }
 
-  if (message.type === 'done') {
+  if (message.type === 'turn.completed') {
     receivedDone = true;
     doneAt = performance.now();
     socket.close();
