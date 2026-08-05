@@ -1,29 +1,36 @@
+import { randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-import { randomUUID } from 'node:crypto';
 import { WebSocket, WebSocketServer } from 'ws';
 import { clientMessageSchema, type LumiaServerJsonMessage } from '../../shared/protocol/index.js';
-import type { ServerConfig } from '../config/env.js';
-import type { CognitivePlanner } from '../cognition/cognitivePlanner.js';
+import type { CognitiveBudgetController } from '../cognition/cognitiveBudgetController.js';
+import type { CognitiveModeSelector } from '../cognition/cognitiveModeSelector.js';
+import type { DeliberationService } from '../cognition/deliberationService.js';
 import type { ResponseGenerator } from '../cognition/responseGenerator.js';
+import type { ResponseReviewer } from '../cognition/responseReviewer.js';
+import type { SituationInterpreter } from '../cognition/situationInterpreter.js';
 import type { TurnConsolidator } from '../cognition/turnConsolidator.js';
+import type { ServerConfig } from '../config/env.js';
 import type { InitiativeService } from '../initiative/initiativeService.js';
+import type { KnowledgeProvider } from '../knowledge/knowledgeProvider.js';
 import type { MemoryRepository } from '../memory/memoryRepository.js';
 import { TurnOrchestrator } from '../pipeline/turnOrchestrator.js';
 
 type Dependencies = {
   config: ServerConfig;
   repository: MemoryRepository;
-  planner: CognitivePlanner;
+  interpreter: SituationInterpreter;
+  modeSelector: CognitiveModeSelector;
+  budgetController: CognitiveBudgetController;
+  knowledgeProvider: KnowledgeProvider;
+  deliberator: DeliberationService;
   generator: ResponseGenerator;
+  reviewer: ResponseReviewer;
   consolidator: TurnConsolidator;
   initiative: InitiativeService;
 };
 
-export function attachConversationWebSocketServer(
-  httpServer: import('node:http').Server,
-  dependencies: Dependencies,
-): void {
+export function attachConversationWebSocketServer(httpServer: import('node:http').Server, dependencies: Dependencies): void {
   const wss = new WebSocketServer({ noServer: true });
   httpServer.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const url = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`);
@@ -84,10 +91,16 @@ export function attachConversationWebSocketServer(
         lastSampleRate = message.sampleRate;
         void orchestrator.evaluateInitiative(message.requestId, message.sampleRate);
       } else if (message.type === 'memory.list') {
-        sendJson({ type: 'memory.snapshot', memories: dependencies.repository.listMemories(), at: new Date().toISOString() });
+        sendMemorySnapshot(sendJson, dependencies.repository, message.query, message.memoryType);
+      } else if (message.type === 'memory.revise') {
+        dependencies.repository.reviseMemoryManually(message.memoryId, message.content, message.reason);
+        sendMemorySnapshot(sendJson, dependencies.repository);
+      } else if (message.type === 'memory.mark_uncertain') {
+        dependencies.repository.markMemoryUncertain(message.memoryId, message.reason);
+        sendMemorySnapshot(sendJson, dependencies.repository);
       } else if (message.type === 'memory.delete') {
-        dependencies.repository.deleteMemory(message.memoryId);
-        sendJson({ type: 'memory.snapshot', memories: dependencies.repository.listMemories(), at: new Date().toISOString() });
+        dependencies.repository.deleteMemory(message.memoryId, message.reason);
+        sendMemorySnapshot(sendJson, dependencies.repository);
       } else if (message.type === 'playback.started') {
         orchestrator.markPlaybackStarted(message.turnId, message.elapsedMs);
       } else if (message.type === 'activity') {
@@ -100,4 +113,13 @@ export function attachConversationWebSocketServer(
       orchestrator.cancel();
     });
   });
+}
+
+function sendMemorySnapshot(
+  sendJson: (message: LumiaServerJsonMessage) => void,
+  repository: MemoryRepository,
+  query?: string,
+  memoryType?: string,
+): void {
+  sendJson({ type: 'memory.snapshot', memories: repository.listMemories(query, memoryType), at: new Date().toISOString() });
 }

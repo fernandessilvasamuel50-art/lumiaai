@@ -8,7 +8,8 @@ import {
 } from '../../shared/protocol/index.js';
 import type { ServerConfig } from '../config/env.js';
 import { assertCartesiaConfigured } from '../config/env.js';
-import type { LlmSpeechSegment } from '../pipeline/speechSegmenter.js';
+import type { GeneratedSpeechSegment } from '../speech/generatedSpeechText.js';
+import { assertSpeechSegmentForTurn } from '../speech/speechGateway.js';
 import { cartesiaErrorToPortuguese, unknownErrorToPortuguese } from './errors.js';
 
 type CartesiaEvent = {
@@ -50,6 +51,7 @@ export class CartesiaSpeechStream {
     private readonly turnId: string,
     sampleRate: number,
     private readonly handlers: CartesiaHandlers,
+    private readonly isCurrent: () => boolean = () => true,
   ) {
     this.outputFormat = { container: OUTPUT_CONTAINER, encoding: OUTPUT_ENCODING, sampleRate };
     void this.donePromise.catch(() => undefined);
@@ -91,9 +93,12 @@ export class CartesiaSpeechStream {
     });
   }
 
-  async sendSegment(segment: LlmSpeechSegment): Promise<void> {
-    if (segment.turnId !== this.turnId) throw new Error('Segmento de outro turno rejeitado pelo TTS.');
-    if (segment.source !== 'ollama_stream') throw new Error('Origem de fala rejeitada pelo TTS.');
+  async sendSegment(segment: GeneratedSpeechSegment): Promise<void> {
+    assertSpeechSegmentForTurn(segment, {
+      turnId: this.turnId,
+      model: this.config.ollamaModel,
+      active: !this.cancelled && !this.finishedInput && this.isCurrent(),
+    });
     if (!segment.text || this.cancelled || this.finishedInput) return;
     await this.send({ ...this.baseRequest(), transcript: segment.text, continue: true });
   }

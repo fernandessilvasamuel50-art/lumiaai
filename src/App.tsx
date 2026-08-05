@@ -1,13 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   BackendStatusResponse,
+  CognitiveTurnState,
   HistoryItem,
   LumiaServerJsonMessage,
   MemoryInspectorItem,
   TurnPerformanceMetrics,
   TurnStatus,
 } from '../shared/protocol/index.js';
-import { MAX_PLAYBACK_VOLUME, MIN_PLAYBACK_VOLUME } from '../shared/protocol/index.js';
+import { isOllamaReady, MAX_PLAYBACK_VOLUME, MIN_PLAYBACK_VOLUME } from '../shared/protocol/index.js';
 import { Conversation } from './components/Conversation/Conversation.js';
 import { DeveloperPanel, type DeveloperTurnState } from './components/DeveloperPanel/DeveloperPanel.js';
 import { SystemIndicators } from './components/SystemIndicators.js';
@@ -15,7 +16,9 @@ import { PcmStreamPlayer } from './lib/audio/PcmStreamPlayer.js';
 import { LocalConnection, shouldAcceptTurnEvent } from './services/localConnection.js';
 import './styles.css';
 
-const EMPTY_DEVELOPER_TURN: DeveloperTurnState = { transcript: '', metrics: {}, errors: [] };
+function emptyDeveloperTurn(): DeveloperTurnState {
+  return { transcript: '', provenance: [], metrics: {}, errors: [] };
+}
 
 export default function App() {
   const [message, setMessage] = useState('');
@@ -27,9 +30,10 @@ export default function App() {
   const [errorMessage, setErrorMessage] = useState('');
   const [volume, setVolume] = useState(1);
   const [level, setLevel] = useState(0);
-  const [developerTurn, setDeveloperTurn] = useState<DeveloperTurnState>(EMPTY_DEVELOPER_TURN);
+  const [developerTurn, setDeveloperTurn] = useState<DeveloperTurnState>(emptyDeveloperTurn);
   const [memories, setMemories] = useState<MemoryInspectorItem[]>([]);
   const [initiativeBusy, setInitiativeBusy] = useState(false);
+  const [ollamaBusy, setOllamaBusy] = useState(false);
 
   const connectionRef = useRef<LocalConnection | null>(null);
   const playerRef = useRef<PcmStreamPlayer | null>(null);
@@ -52,6 +56,10 @@ export default function App() {
       onOpen: () => {
         setLocalConnected(true);
         setErrorMessage('');
+        setDeveloperTurn((current) => ({
+          ...current,
+          errors: current.errors.filter((item) => !item.includes('conexão com o backend local')),
+        }));
       },
       onClose: () => setLocalConnected(false),
       onJson: handleServerMessage,
@@ -63,32 +71,29 @@ export default function App() {
     connectionRef.current = connection;
     connection.connect();
     return () => connection.close();
-    // The connection intentionally owns the first-render handlers; live values are held in refs.
+    // Handlers read live mutable values from refs and intentionally belong to the initial connection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function refreshStatus() {
-      try {
-        const response = await fetch('/api/status');
-        if (!response.ok) throw new Error('status indisponível');
-        const data = (await response.json()) as BackendStatusResponse;
-        if (!cancelled) {
-          setBackend(data);
-          setBackendOnline(true);
-        }
-      } catch {
-        if (!cancelled) setBackendOnline(false);
-      }
+  const refreshStatus = useCallback(async () => {
+    try {
+      const response = await fetch('/api/status');
+      if (!response.ok) throw new Error('status indisponível');
+      setBackend((await response.json()) as BackendStatusResponse);
+      setBackendOnline(true);
+    } catch {
+      setBackendOnline(false);
     }
-    void refreshStatus();
-    const interval = window.setInterval(refreshStatus, 5000);
+  }, []);
+
+  useEffect(() => {
+    const initial = window.setTimeout(() => void refreshStatus(), 0);
+    const interval = window.setInterval(() => void refreshStatus(), 5000);
     return () => {
-      cancelled = true;
+      window.clearTimeout(initial);
       window.clearInterval(interval);
     };
-  }, []);
+  }, [refreshStatus]);
 
   async function preparePlayer(turnId: string): Promise<PcmStreamPlayer> {
     if (playerRef.current) await playerRef.current.stop();
@@ -100,7 +105,7 @@ export default function App() {
         if (activeTurnIdRef.current !== turnId) return;
         const elapsedMs = Math.max(0, scheduledAt - activeStartedAtRef.current);
         setStatus('Falando');
-        setDeveloperTurn((current) => ({ ...current, metrics: { ...current.metrics, playbackStartMs: elapsedMs } }));
+        mergeMetrics({ playbackStartMs: elapsedMs });
         connectionRef.current?.send({ type: 'playback.started', turnId, elapsedMs });
       },
       onPlaybackEnd: () => {
@@ -129,7 +134,7 @@ export default function App() {
     activeStartedAtRef.current = performance.now();
     setStatus('Pensando');
     setErrorMessage('');
-    setDeveloperTurn({ transcript: '', metrics: {}, errors: [] });
+    setDeveloperTurn(emptyDeveloperTurn());
     setHistory((current) => [...current, { id: `local-${turnId}`, kind: 'user', text: content, createdAt: new Date().toISOString() }]);
     setMessage('');
     try {
@@ -173,58 +178,65 @@ export default function App() {
     }
     if (event.type === 'initiative.evaluated') {
       setInitiativeBusy(false);
-      if (manualInitiativeRequestIdRef.current === event.requestId) {
-        manualInitiativeRequestIdRef.current = null;
-        if (!event.initiate) {
-          if (playerRef.current) void playerRef.current.stop();
-          playerRef.current = null;
-          playerTurnIdRef.current = null;
-          setDeveloperTurn((current) => ({ ...current, errors: [...current.errors, `Iniciativa silenciosa: ${event.reason}`] }));
-        }
+      if (manualInitiativeRequestIdRef.current === event.requestId) manualInitiativeRequestIdRef.current = null;
+      if (event.initiate && event.turnId) {
+        activeTurnIdRef.current = event.turnId;
+        activeStartedAtRef.current = performance.now();
+        void preparePlayer(event.turnId);
+      } else if (playerRef.current) {
+        void playerRef.current.stop();
+        playerRef.current = null;
+        playerTurnIdRef.current = null;
+        setDeveloperTurn((current) => ({ ...current, errors: [...current.errors, `Iniciativa silenciosa: ${event.reason}`] }));
       }
       return;
     }
     if (event.type === 'error') {
       if (event.turnId && !shouldAcceptTurnEvent(activeTurnIdRef.current, event.turnId)) return;
-      recordError(`${event.code}: ${event.message}`);
+      recordError(`${event.code}: ${event.message}${event.details ? ` (${event.details})` : ''}`);
       setStatus('Erro');
-      if (event.code === 'initiative_failed') {
-        setInitiativeBusy(false);
-        if (playerRef.current) void playerRef.current.stop();
-        playerRef.current = null;
-        playerTurnIdRef.current = null;
-      }
       if (event.turnId) void interruptPlayerAfterError(event.turnId);
+      if (event.code.startsWith('OLLAMA_')) void refreshStatus();
       return;
     }
-    if (!('turnId' in event) || !shouldAcceptTurnEvent(activeTurnIdRef.current, event.turnId)) return;
+    if (!('turnId' in event)) return;
+    if (event.type === 'turn.started' && !activeTurnIdRef.current) activeTurnIdRef.current = event.turnId;
+    if (!shouldAcceptTurnEvent(activeTurnIdRef.current, event.turnId)) return;
 
     if (event.type === 'turn.started') {
       activeTurnIdRef.current = event.turnId;
       activeStartedAtRef.current = performance.now();
       setStatus('Pensando');
-      setDeveloperTurn({ transcript: '', metrics: {}, errors: [] });
+      setDeveloperTurn(emptyDeveloperTurn());
       if (playerTurnIdRef.current !== event.turnId) void preparePlayer(event.turnId);
-    } else if (event.type === 'cognition.started') {
-      setStatus('Pensando');
+    } else if (event.type === 'turn.state') {
+      setDeveloperTurn((current) => ({ ...current, state: event.state }));
+      setStatus(statusForState(event.state));
+    } else if (event.type === 'cognition.perceived') {
+      setDeveloperTurn((current) => ({ ...current, frame: event.frame, metrics: { ...current.metrics, perceptionMs: event.perceptionMs } }));
     } else if (event.type === 'cognition.completed') {
-      setStatus('Formando resposta');
       setDeveloperTurn((current) => ({
         ...current,
+        frame: event.frame,
         decision: event.decision,
         context: event.context,
+        selfModel: event.selfModel,
+        budget: event.budget,
         metrics: { ...current.metrics, deliberationMs: event.deliberationMs },
       }));
+    } else if (event.type === 'response.reviewed') {
+      setStatus('Revisando');
+      setDeveloperTurn((current) => ({ ...current, review: event.review, metrics: { ...current.metrics, reviewMs: event.reviewMs } }));
     } else if (event.type === 'llm.first_token') {
       mergeMetrics({ firstTokenMs: event.elapsedMs });
     } else if (event.type === 'llm.segment') {
       setDeveloperTurn((current) => ({
         ...current,
         transcript: current.transcript + event.text,
-        metrics: current.metrics.firstSegmentMs === undefined
-          ? { ...current.metrics, firstSegmentMs: event.elapsedMs }
-          : current.metrics,
+        metrics: current.metrics.firstSegmentMs === undefined ? { ...current.metrics, firstSegmentMs: event.elapsedMs } : current.metrics,
       }));
+    } else if (event.type === 'speech.provenance') {
+      setDeveloperTurn((current) => ({ ...current, provenance: [...current.provenance, event.provenance] }));
     } else if (event.type === 'tts.first_audio') {
       mergeMetrics({ firstAudioMs: event.elapsedMs });
     } else if (event.type === 'playback.started') {
@@ -239,7 +251,11 @@ export default function App() {
     } else if (event.type === 'turn.cancelled') {
       void interruptLocalTurn(event.turnId);
     } else if (event.type === 'memory.consolidated') {
-      setDeveloperTurn((current) => ({ ...current, consolidation: event }));
+      setDeveloperTurn((current) => ({
+        ...current,
+        consolidation: event.summary,
+        metrics: { ...current.metrics, consolidationMs: event.consolidationMs },
+      }));
     }
   }
 
@@ -250,10 +266,7 @@ export default function App() {
   function finishTurnMarker(turnId: string, interrupted: boolean, durationMs?: number): void {
     if (finalizedTurnsRef.current.has(turnId)) return;
     finalizedTurnsRef.current.add(turnId);
-    setHistory((current) => [
-      ...current,
-      { id: `lumia-${turnId}`, kind: 'lumia', createdAt: new Date().toISOString(), durationMs, interrupted },
-    ]);
+    setHistory((current) => [...current, { id: `lumia-${turnId}`, kind: 'lumia', createdAt: new Date().toISOString(), durationMs, interrupted }]);
     if (activeTurnIdRef.current === turnId) activeTurnIdRef.current = null;
     setStatus(interrupted ? 'Interrompido' : 'Concluído');
   }
@@ -277,27 +290,51 @@ export default function App() {
     manualInitiativeRequestIdRef.current = requestId;
     try {
       const temporary = await preparePlayer(requestId);
-      if (!connectionRef.current?.send({ type: 'initiative.evaluate', requestId, sampleRate: temporary.sampleRate })) {
-        throw new Error('Backend local desconectado.');
-      }
+      if (!connectionRef.current?.send({ type: 'initiative.evaluate', requestId, sampleRate: temporary.sampleRate })) throw new Error('Backend local desconectado.');
     } catch (error) {
       setInitiativeBusy(false);
       recordError(error instanceof Error ? error.message : 'Falha na avaliação de iniciativa.');
     }
   }
 
-  const busy = ['Pensando', 'Formando resposta', 'Falando'].includes(status);
+  async function runOllamaAction(action: 'start' | 'retry'): Promise<void> {
+    setOllamaBusy(true);
+    setErrorMessage('');
+    try {
+      const response = await fetch(`/api/ollama/${action}`, { method: 'POST' });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error || 'A operação do Ollama falhou.');
+      await refreshStatus();
+    } catch (error) {
+      recordError(error instanceof Error ? error.message : 'Falha técnica ao gerenciar o Ollama.');
+    } finally {
+      setOllamaBusy(false);
+    }
+  }
+
+  const busy = ['Pensando', 'Recuperando contexto', 'Formando resposta', 'Revisando', 'Falando'].includes(status);
+  const ollama = backend?.ollama;
   return (
     <main className="app-shell">
       <header className="app-header">
-        <div><span className="eyebrow">Cognitive Core · local</span><h1>Lumia</h1></div>
+        <div><span className="eyebrow">Cognitive OS · local</span><h1>Lumia</h1></div>
         <SystemIndicators backendOnline={backendOnline} status={backend} />
       </header>
 
-      {backend?.ollama.available && !backend.ollama.modelInstalled ? (
-        <div className="technical-banner">Modelo ausente. Execute <code>{backend.ollama.installCommand}</code></div>
+      {ollama?.state === 'model_missing' ? (
+        <div className="technical-banner">Modelo ausente. Execute <code>{ollama.installCommand}</code><button type="button" onClick={() => void runOllamaAction('retry')}>Tentar novamente</button></div>
       ) : null}
-      {!backend?.ollama.available && backendOnline ? <div className="technical-banner">Ollama indisponível. Inicie o serviço e tente novamente.</div> : null}
+      {ollama?.state === 'service_offline' || ollama?.state === 'executable_not_found' ? (
+        <div className="technical-banner">
+          <span>{ollama.state === 'executable_not_found' ? 'Executável do Ollama não encontrado.' : 'Serviço Ollama desligado.'}</span>
+          {ollama.state === 'service_offline' && ollama.canStart ? <button type="button" disabled={ollamaBusy} onClick={() => void runOllamaAction('start')}>Iniciar Ollama</button> : null}
+          <button type="button" disabled={ollamaBusy} onClick={() => void runOllamaAction('retry')}>Tentar novamente</button>
+        </div>
+      ) : null}
+      {ollama?.state === 'starting' || ollama?.state === 'model_loading' ? <div className="technical-banner">{ollama.state === 'starting' ? 'Ollama iniciando…' : `Carregando ${ollama.model}…`}</div> : null}
+      {ollama?.state === 'endpoint_invalid' || ollama?.state === 'model_error' ? (
+        <div className="error-banner">{ollama.state === 'endpoint_invalid' ? ollama.technicalMessage : ollama.technicalMessage}<button type="button" onClick={() => void runOllamaAction('retry')}>Tentar novamente</button></div>
+      ) : null}
       {errorMessage ? <div className="error-banner">{errorMessage}</div> : null}
 
       <Conversation
@@ -322,9 +359,22 @@ export default function App() {
         initiativeBusy={initiativeBusy}
         onVolume={setVolume}
         onEvaluateInitiative={() => void evaluateInitiative()}
-        onRefreshMemories={() => connectionRef.current?.send({ type: 'memory.list' })}
-        onDeleteMemory={(memoryId) => connectionRef.current?.send({ type: 'memory.delete', memoryId })}
+        onSearchMemories={(query, memoryType) => connectionRef.current?.send({ type: 'memory.list', query, memoryType })}
+        onReviseMemory={(memoryId, content, reason) => connectionRef.current?.send({ type: 'memory.revise', memoryId, content, reason })}
+        onMarkMemoryUncertain={(memoryId, reason) => connectionRef.current?.send({ type: 'memory.mark_uncertain', memoryId, reason })}
+        onDeleteMemory={(memoryId, reason) => connectionRef.current?.send({ type: 'memory.delete', memoryId, reason })}
       />
+      {!isOllamaReady(ollama) && backendOnline ? <span className="sr-only">Ollama ainda não está pronto.</span> : null}
     </main>
   );
+}
+
+function statusForState(state: CognitiveTurnState): TurnStatus {
+  if (state === 'RETRIEVING') return 'Recuperando contexto';
+  if (state === 'DELIBERATING' || state === 'PERCEIVING' || state === 'RECEIVED') return 'Pensando';
+  if (state === 'GENERATING' || state === 'WAITING_FOR_CLARIFICATION') return 'Formando resposta';
+  if (state === 'SPEAKING' || state === 'CONSOLIDATING') return 'Falando';
+  if (state === 'COMPLETED') return 'Concluído';
+  if (state === 'CANCELLED') return 'Interrompido';
+  return 'Erro';
 }

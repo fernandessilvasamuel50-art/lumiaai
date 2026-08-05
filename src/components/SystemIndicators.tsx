@@ -1,11 +1,11 @@
 import { BrainCircuit, Database, Radio } from 'lucide-react';
-import type { BackendStatusResponse } from '../../shared/protocol/index.js';
+import { isOllamaReady, type BackendStatusResponse } from '../../shared/protocol/index.js';
 
 type Props = { backendOnline: boolean; status: BackendStatusResponse | null };
 
 export function SystemIndicators({ backendOnline, status }: Props) {
   const indicators = [
-    { label: 'Ollama', active: Boolean(status?.ollama.available && status.ollama.modelInstalled), icon: BrainCircuit },
+    { label: 'Ollama', active: isOllamaReady(status?.ollama), icon: BrainCircuit },
     { label: 'Cartesia', active: Boolean(status?.cartesiaConfigured), icon: Radio },
     { label: 'Memória', active: Boolean(status?.databaseReady), icon: Database },
   ];

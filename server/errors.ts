@@ -1,8 +1,10 @@
+import type { LumiaTechnicalErrorCode } from '../shared/protocol/index.js';
+
 export class LumiaServerError extends Error {
-  readonly code: string;
+  readonly code: LumiaTechnicalErrorCode | string;
   readonly userMessage: string;
 
-  constructor(code: string, userMessage: string) {
+  constructor(code: LumiaTechnicalErrorCode | string, userMessage: string) {
     super(userMessage);
     this.name = 'LumiaServerError';
     this.code = code;

@@ -24,6 +24,10 @@ export type ServerConfig = {
   ollamaModel: string;
   ollamaNumCtx: number;
   ollamaKeepAlive: string;
+  ollamaAutoStart: boolean;
+  ollamaStartupTimeoutMs: number;
+  ollamaHealthRetryMs: number;
+  ollamaWarmup: boolean;
   databasePath: string;
   initiativeEnabled: boolean;
   initiativeIdleMinutes: number;
@@ -40,15 +44,8 @@ export function loadServerConfig(options: ConfigOptions = {}): ServerConfig {
   const env = options.env ?? process.env;
   const port = parseInteger(env.PORT, 8787, 'PORT', 1, 65535);
   const ollamaNumCtx = parseInteger(env.OLLAMA_NUM_CTX, 8192, 'OLLAMA_NUM_CTX', 1024, 131072);
-  const initiativeIdleMinutes = parseNumber(
-    env.LUMIA_INITIATIVE_IDLE_MINUTES,
-    10,
-    'LUMIA_INITIATIVE_IDLE_MINUTES',
-    0.1,
-    1440,
-  );
-  const ollamaBaseUrl = env.OLLAMA_BASE_URL?.trim() || 'http://127.0.0.1:11434';
-  assertLocalOllamaUrl(ollamaBaseUrl);
+  const initiativeIdleMinutes = parseNumber(env.LUMIA_INITIATIVE_IDLE_MINUTES, 10, 'LUMIA_INITIATIVE_IDLE_MINUTES', 0.1, 1440);
+  const ollamaBaseUrl = (env.OLLAMA_BASE_URL?.trim() || 'http://127.0.0.1:11434').replace(/\/$/, '');
 
   return {
     envPath,
@@ -59,10 +56,14 @@ export function loadServerConfig(options: ConfigOptions = {}): ServerConfig {
     cartesiaApiVersion: CARTESIA_API_VERSION,
     cartesiaModelId: CARTESIA_MODEL_ID,
     outputEncoding: OUTPUT_ENCODING,
-    ollamaBaseUrl: ollamaBaseUrl.replace(/\/$/, ''),
+    ollamaBaseUrl,
     ollamaModel: env.OLLAMA_MODEL?.trim() || 'qwen3:8b',
     ollamaNumCtx,
     ollamaKeepAlive: env.OLLAMA_KEEP_ALIVE?.trim() || '15m',
+    ollamaAutoStart: parseBoolean(env.OLLAMA_AUTO_START, true, 'OLLAMA_AUTO_START'),
+    ollamaStartupTimeoutMs: parseInteger(env.OLLAMA_STARTUP_TIMEOUT_MS, 30000, 'OLLAMA_STARTUP_TIMEOUT_MS', 1000, 300000),
+    ollamaHealthRetryMs: parseInteger(env.OLLAMA_HEALTH_RETRY_MS, 1000, 'OLLAMA_HEALTH_RETRY_MS', 100, 30000),
+    ollamaWarmup: parseBoolean(env.OLLAMA_WARMUP, true, 'OLLAMA_WARMUP'),
     databasePath: path.resolve(cwd, env.LUMIA_DATABASE_PATH?.trim() || './data/lumia.db'),
     initiativeEnabled: parseBoolean(env.LUMIA_INITIATIVE_ENABLED, true, 'LUMIA_INITIATIVE_ENABLED'),
     initiativeIdleMinutes,
@@ -72,9 +73,18 @@ export function loadServerConfig(options: ConfigOptions = {}): ServerConfig {
 export function assertCartesiaConfigured(config: ServerConfig): void {
   if (!config.cartesiaApiKey) {
     throw new LumiaServerError(
-      'cartesia_api_key_missing',
-      'A chave da Cartesia não está configurada. Preencha CARTESIA_API_KEY em C:\\lumia\\.env e reinicie o servidor.',
+      'CARTESIA_UNAVAILABLE',
+      'A chave da Cartesia não está configurada. Preencha CARTESIA_API_KEY no arquivo .env e reinicie o servidor.',
     );
+  }
+}
+
+export function isLocalOllamaUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
+  } catch {
+    return false;
   }
 }
 
@@ -99,19 +109,4 @@ function parseBoolean(value: string | undefined, fallback: boolean, name: string
   if (value === 'true') return true;
   if (value === 'false') return false;
   throw new LumiaServerError('invalid_environment', `${name} deve ser true ou false.`);
-}
-
-function assertLocalOllamaUrl(value: string): void {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new LumiaServerError('invalid_environment', 'OLLAMA_BASE_URL deve ser uma URL HTTP local válida.');
-  }
-  if (!['http:', 'https:'].includes(url.protocol)) {
-    throw new LumiaServerError('invalid_environment', 'OLLAMA_BASE_URL deve usar HTTP ou HTTPS.');
-  }
-  if (!['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) {
-    throw new LumiaServerError('invalid_environment', 'OLLAMA_BASE_URL deve apontar para o serviço local (127.0.0.1 ou localhost).');
-  }
 }

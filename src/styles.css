@@ -40,6 +40,8 @@ h1 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: clamp
 
 .technical-banner, .error-banner { margin: 0 0 .8rem; padding: .72rem .9rem; border: 1px solid rgba(251, 191, 36, .22); border-radius: 12px; background: rgba(120, 53, 15, .13); color: #fde68a; font-size: .87rem; }
 .error-banner { border-color: rgba(253, 164, 175, .24); background: rgba(127, 29, 29, .14); color: #fecdd3; }
+.technical-banner, .error-banner { display: flex; align-items: center; flex-wrap: wrap; gap: .65rem; }
+.technical-banner button, .error-banner button { padding: .38rem .62rem; border: 1px solid currentColor; border-radius: 8px; background: rgba(0,0,0,.24); color: inherit; cursor: pointer; }
 code { padding: .13rem .3rem; border-radius: 4px; background: rgba(0,0,0,.35); }
 
 .conversation-card { overflow: hidden; border: 1px solid var(--border); border-radius: 24px; background: linear-gradient(180deg, rgba(24, 20, 31, .94), rgba(15, 13, 20, .9)); box-shadow: 0 35px 100px rgba(0,0,0,.35), inset 0 1px rgba(255,255,255,.025); }
@@ -89,10 +91,20 @@ button:disabled { cursor: not-allowed; opacity: .38; }
 .debug-block pre { max-height: 230px; overflow: auto; margin: 0; color: #cfc6da; font: .7rem/1.5 "Cascadia Code",Consolas,monospace; white-space: pre-wrap; word-break: break-word; }
 .memory-inspector { grid-column: 1 / -1; }
 .memory-inspector > p { color: var(--muted); font-size: .8rem; }
-.memory-inspector article { position: relative; margin-top: .55rem; padding: .7rem 3rem .7rem .75rem; border: 1px solid rgba(255,255,255,.06); border-radius: 9px; background: rgba(255,255,255,.025); }
+.memory-inspector article { margin-top: .55rem; padding: .75rem; border: 1px solid rgba(255,255,255,.06); border-radius: 9px; background: rgba(255,255,255,.025); }
 .memory-inspector article div { display: flex; gap: .7rem; color: #a89caf; font-size: .68rem; }
 .memory-inspector article p { margin: .35rem 0 0; font-size: .79rem; line-height: 1.4; }
-.memory-inspector article button { position: absolute; top: .55rem; right: .55rem; min-height: 30px; padding: 0 .45rem; }
+.memory-search { display: grid; grid-template-columns: auto 1fr minmax(150px,auto) auto; align-items: center; gap: .5rem; }
+.memory-search input, .memory-search select, .memory-editor textarea, .memory-editor input, .memory-reason { min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: .55rem .65rem; background: #100d15; color: #e6e0ed; }
+.memory-editor { display: grid !important; grid-template-columns: 1fr auto; gap: .5rem !important; margin-top: .55rem; }
+.memory-editor textarea { grid-column: 1 / -1; min-height: 82px; resize: vertical; }
+.memory-actions { display: flex !important; flex-wrap: wrap; gap: .4rem !important; margin-top: .6rem; }
+.memory-actions button { min-height: 30px; padding: 0 .5rem; }
+.memory-reason { width: 100%; margin-top: .5rem; }
+.memory-history { margin-top: .6rem; color: #a89caf; font-size: .72rem; }
+.memory-history summary { cursor: pointer; }
+.memory-history pre { max-height: 180px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 
 @media (max-width: 720px) {
   .app-shell { padding: .8rem; }
@@ -102,4 +114,6 @@ button:disabled { cursor: not-allowed; opacity: .38; }
   .user-message { max-width: 88%; }
   .developer-content { grid-template-columns: 1fr; }
   .debug-block, .memory-inspector, .developer-controls { grid-column: 1; }
+  .memory-search { grid-template-columns: auto 1fr; }
+  .memory-search select, .memory-search button { grid-column: 2; }
 }

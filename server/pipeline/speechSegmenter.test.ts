@@ -1,35 +1,39 @@
 import { describe, expect, it } from 'vitest';
-import { SpeechSegmenter } from './speechSegmenter.js';
+import { loadServerConfig } from '../config/env.js';
+import { OllamaClient, type OllamaStreamChunk } from '../ollama/ollamaClient.js';
+import { GeneratedSpeechStream } from '../speech/generatedSpeechText.js';
 
-describe('SpeechSegmenter', () => {
-  const turnId = crypto.randomUUID();
-
-  it('libera frases naturais e preserva concatenação e espaços exatamente', () => {
-    const input = 'Primeira frase.  Segunda frase! Terceira';
-    const segmenter = new SpeechSegmenter(turnId);
-    const segments = [...segmenter.push('Primeira fra'), ...segmenter.push('se.  Segunda frase! '), ...segmenter.push('Terceira'), ...segmenter.flush()];
-    expect(segments.map((item) => item.text).join('')).toBe(input);
-    expect(segments.map((item) => item.text)).toEqual(['Primeira frase.  ', 'Segunda frase! ', 'Terceira']);
-    expect(segments.every((item) => item.source === 'ollama_stream')).toBe(true);
+describe('GeneratedSpeechStream', () => {
+  it('segmenta somente chunks autenticados e preserva proveniência', async () => {
+    const turnId = crypto.randomUUID();
+    const chunks = await authenticChunks(turnId, ['Primeira frase. ', 'Segunda frase completa.']);
+    const controller = new AbortController();
+    const stream = new GeneratedSpeechStream({ turnId, model: 'qwen3:8b', signal: controller.signal, isCurrent: () => true });
+    const segments = chunks.flatMap((chunk) => stream.push(chunk)).concat(stream.flush());
+    expect(segments.map((segment) => segment.text).join('')).toBe('Primeira frase. Segunda frase completa.');
+    expect(segments.every((segment) => segment.provenance.source === 'ollama_stream')).toBe(true);
+    expect(segments.flatMap((segment) => segment.provenance.chunkSequence)).toEqual(expect.arrayContaining([1, 2]));
   });
 
-  it('não separa decimal nem abreviação', () => {
-    const segmenter = new SpeechSegmenter(turnId);
-    const input = 'O valor é 3.14, segundo o Dr. Silva. Agora terminou. ';
-    expect(segmenter.push(input).map((item) => item.text)).toEqual(['O valor é 3.14, segundo o Dr. Silva. ', 'Agora terminou. ']);
-  });
-
-  it('faz flush final sem inventar pontuação', () => {
-    const segmenter = new SpeechSegmenter(turnId);
-    expect(segmenter.push('fragmento final')).toEqual([]);
-    expect(segmenter.flush()[0]?.text).toBe('fragmento final');
-  });
-
-  it('descarta buffer e chunks tardios após cancelamento', () => {
-    const segmenter = new SpeechSegmenter(turnId);
-    segmenter.push('texto parcial');
-    segmenter.cancel();
-    expect(segmenter.flush()).toEqual([]);
-    expect(segmenter.push(' atrasado')).toEqual([]);
+  it('rejeita literal forjado e turno cancelado', async () => {
+    const turnId = crypto.randomUUID();
+    const [chunk] = await authenticChunks(turnId, ['Texto.']);
+    const controller = new AbortController();
+    const stream = new GeneratedSpeechStream({ turnId, model: 'qwen3:8b', signal: controller.signal, isCurrent: () => true });
+    expect(() => stream.push({ source: 'ollama_stream', turnId, model: 'qwen3:8b', sequence: 1, text: 'literal' } as OllamaStreamChunk)).toThrow('autenticação');
+    controller.abort();
+    expect(() => stream.push(chunk!)).toThrow('cancelado');
   });
 });
+
+async function authenticChunks(turnId: string, texts: string[]): Promise<OllamaStreamChunk[]> {
+  const lines = [
+    ...texts.map((text) => JSON.stringify({ message: { role: 'assistant', content: text }, done: false })),
+    JSON.stringify({ done: true, eval_count: 4, eval_duration: 1_000_000_000 }),
+  ].join('\n') + '\n';
+  const config = loadServerConfig({ env: {}, loadDotEnv: false });
+  const client = new OllamaClient(config, (async () => new Response(lines, { status: 200 })) as typeof fetch);
+  const chunks: OllamaStreamChunk[] = [];
+  await client.streamChat([], turnId, new AbortController().signal, (chunk) => { chunks.push(chunk); });
+  return chunks;
+}

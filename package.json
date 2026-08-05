@@ -1,7 +1,7 @@
 {
   "name": "lumia",
-  "version": "0.2.0",
-  "description": "Lumia Cognitive Core: conversa por voz com cerebro local, memoria e iniciativa.",
+  "version": "0.3.0",
+  "description": "Lumia Cognitive OS: arquitetura cognitiva local, memória versionada e fala com proveniência.",
   "main": "dist-server/server/index.js",
   "scripts": {
     "dev": "concurrently -k -n backend,frontend -c violet,cyan \"npm:dev:server\" \"npm:dev:client\"",
@@ -12,7 +12,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p server/tsconfig.json --noEmit",
-    "smoke:stream": "node scripts/smoke-stream.mjs"
+    "smoke:stream": "node scripts/smoke-stream.mjs",
+    "smoke:cognition": "tsx scripts/smoke-cognition.mts"
   },
   "keywords": [],
   "author": "",

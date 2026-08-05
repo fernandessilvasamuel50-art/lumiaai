@@ -15,7 +15,7 @@ export class InitiativeService {
       this.prompts.buildInitiativeMessages(openLoops),
       initiativeDecisionJsonSchema,
       signal,
-      0.15,
+      { temperature: 0.15, numPredict: 300 },
     );
     const decision = initiativeDecisionSchema.parse(JSON.parse(response.content));
     if (decision.openLoopId && !openLoops.some((loop) => loop.id === decision.openLoopId)) {
