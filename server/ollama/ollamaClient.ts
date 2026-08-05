@@ -2,6 +2,8 @@ import type { OllamaStatus } from '../../shared/protocol/index.js';
 import type { ServerConfig } from '../config/env.js';
 import { parseNdjsonStream } from './ollamaStreamParser.js';
 
+const OLLAMA_CHAT_TIMEOUT_MS = 180_000;
+
 export type OllamaMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
 type OllamaChatChunk = {
@@ -138,10 +140,16 @@ export class OllamaClient {
           }),
           signal,
         },
-        10000,
+        OLLAMA_CHAT_TIMEOUT_MS,
       );
     } catch (error) {
       if (signal.aborted) throw error;
+      if (isTimeoutError(error)) {
+        throw new OllamaClientError(
+          'ollama_timeout',
+          'O Ollama demorou mais de 180 segundos para carregar ou gerar a resposta.',
+        );
+      }
       throw new OllamaClientError('ollama_unavailable', 'Ollama indisponível em ' + this.config.ollamaBaseUrl + '.');
     }
     if (!response.ok) {
@@ -162,6 +170,15 @@ export class OllamaClient {
     if (init.signal) signals.push(init.signal);
     return this.fetcher(`${this.config.ollamaBaseUrl}${pathname}`, { ...init, signal: AbortSignal.any(signals) });
   }
+}
+
+function isTimeoutError(error: unknown): boolean {
+  if (error instanceof Error && error.name === 'TimeoutError') return true;
+  if (error instanceof Error && 'cause' in error) {
+    const cause = error.cause;
+    return cause instanceof Error && cause.name === 'TimeoutError';
+  }
+  return false;
 }
 
 function metricsFrom(payload: OllamaChatChunk): OllamaGenerationMetrics {
