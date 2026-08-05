@@ -49,7 +49,10 @@ export default function App() {
 
   useEffect(() => {
     const connection = new LocalConnection({
-      onOpen: () => setLocalConnected(true),
+      onOpen: () => {
+        setLocalConnected(true);
+        setErrorMessage('');
+      },
       onClose: () => setLocalConnected(false),
       onJson: handleServerMessage,
       onAudio: (turnId, audio) => {
